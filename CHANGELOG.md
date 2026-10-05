@@ -466,6 +466,56 @@ This release closes that milestone with **301 merged pull requests**.
 
 ### Fixed
 
+- **sandbox:** Medium-risk audit warnings no longer hide a failed shell exit from
+  subagent evidence. `SandboxAuditMiddleware` appended its warning after the
+  trailing `Exit Code: N` marker and rebuilt the `ToolMessage` from four fields,
+  so `_bash_evidence_status` could not find the marker and fell back to
+  `deerflow_tool_meta`, which reports `success`; a failed `sudo pytest -q` could
+  satisfy a `tests_passed` acceptance criterion. The warning is now inserted
+  before a trailing `Exit Code: N` or `Command exited with code N`, an output
+  that is only `Command exited with code N` is left unchanged, and the result
+  keeps `deerflow_tool_meta`, `artifact` and `id`. ([#6307])
+- **persistence:** A second Gateway instance no longer fails startup with
+  `TimeoutError` while another instance runs a PostgreSQL schema migration. The
+  bootstrap advisory lock was taken with a blocking `pg_advisory_lock` on the
+  app engine, whose asyncpg `database.command_timeout` (30s by default) also
+  applies to that statement, so any migration longer than the timeout aborted
+  the waiting instance. Acquisition now polls the non-blocking
+  `pg_try_advisory_lock`: the wait lasts as long as the holder's migration,
+  each attempt stays bounded by `command_timeout`, and the wait is logged once.
+  ([#6306])
+- **projects:** Reading a shelf document for the first time no longer blocks
+  every other database write on SQLite while the document converts. Lazy
+  conversion ran pymupdf/markitdown inside the `BEGIN IMMEDIATE` transaction
+  that serializes the publish against trash and purge, and on SQLite that lock
+  is database-wide, so run status, thread metadata and scheduler writes waited
+  for the whole conversion and failed with `database is locked` after 30
+  seconds. Conversion now writes into `.staging/` outside any transaction; the
+  lock is held only to revalidate the row and atomically rename the output
+  into place, so a document trashed or purged meanwhile still publishes
+  nothing. Concurrent first reads of one document share a single conversion
+  rather than each holding a file-IO worker. ([#6305])
+- **gateway:** Per-run reads now return the rows of IM-channel owners.
+  `start_run` stamps run rows and run events with the raw trusted owner id (for
+  example `feishu:owner-777`), but several run-scoped routes filtered by the
+  internal caller's normalized id, so on the SQL stores any owner id containing
+  characters outside `[A-Za-z0-9_-]` matched nothing:
+  `GET /api/threads/{id}/runs/{rid}/messages` and `/events` returned an empty
+  list, `/workspace-changes` reported no changes, `/artifacts/archive` answered
+  404, and the regenerate source-run lookup fell back or failed with 409. These
+  reads now use the same data identity as the thread message routes (#5448),
+  and every event store accepts `user_id` on `list_messages_by_run()`. Browser
+  and API sessions keep their per-user filter. ([#6282])
+- **runtime:** A multi-worker run that finished successfully is no longer
+  reclaimed as an orphan `error` while its worker is still finalizing. With an
+  event store, the worker records the terminal status in memory first and
+  writes it to the run store only after the journal flush, delivery receipt,
+  workspace scan and duration checkpoint. Lease renewal skipped runs whose
+  local status was already terminal, so a finalization longer than the lease
+  plus grace (about 30–40 seconds by default) let a peer, or the worker's own
+  reconciler, claim the still-active row. The heartbeat now keeps renewing
+  until that deferred write is attempted, and fences the run if a peer claims
+  it. Affects only `run_ownership.heartbeat_enabled` deployments. ([#6263])
 - **channels:** Buzz now follows a thread without a fresh mention for authors
   bound with `/connect`. With `channel_connections.enabled`, the manager maps a
   bound author's threads only in the connection repository, but Buzz's
@@ -7711,3 +7761,8 @@ with **180 merged pull requests** since the first 2.0 milestone tag.
 [#6232]: https://github.com/bytedance/deer-flow/pull/6232
 [#6238]: https://github.com/bytedance/deer-flow/pull/6238
 [#6255]: https://github.com/bytedance/deer-flow/pull/6255
+[#6263]: https://github.com/bytedance/deer-flow/pull/6263
+[#6282]: https://github.com/bytedance/deer-flow/pull/6282
+[#6305]: https://github.com/bytedance/deer-flow/pull/6305
+[#6306]: https://github.com/bytedance/deer-flow/pull/6306
+[#6307]: https://github.com/bytedance/deer-flow/pull/6307

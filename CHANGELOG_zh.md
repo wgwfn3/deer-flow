@@ -423,6 +423,42 @@
 
 ### 修复
 
+- **沙箱：** 中风险审计警告不再让子智能体证据丢失失败的 shell 退出码。
+  `SandboxAuditMiddleware` 原先把警告追加在结尾的 `Exit Code: N` 标记之后，并只用
+  四个字段重建 `ToolMessage`，导致 `_bash_evidence_status` 找不到标记，退回到报告
+  `success` 的 `deerflow_tool_meta`，失败的 `sudo pytest -q` 可能满足 `tests_passed`
+  验收条件。现在警告插在结尾的 `Exit Code: N` 或 `Command exited with code N`
+  之前，整段只有 `Command exited with code N` 的输出保持原样，结果保留
+  `deerflow_tool_meta`、`artifact` 与 `id`。([#6307])
+- **持久化：** 另一个实例正在执行 PostgreSQL 模式迁移时，第二个 Gateway 实例不再
+  因 `TimeoutError` 启动失败。引导期 advisory lock 此前在应用引擎上以阻塞的
+  `pg_advisory_lock` 获取，而该引擎的 asyncpg `database.command_timeout`（默认
+  30 秒）同样作用于这条语句，因此任何超过该时限的迁移都会让等待中的实例中止。
+  现在获取改为轮询非阻塞的 `pg_try_advisory_lock`：等待时长与持锁方的迁移一致，
+  每次尝试仍受 `command_timeout` 约束，等待只记录一次日志。([#6306])
+- **项目：** 在 SQLite 上首次读取书架文档时，文档转换期间不再阻塞所有其他数据库
+  写入。此前懒转换在 `BEGIN IMMEDIATE` 事务内运行 pymupdf/markitdown，以便与移入
+  回收站和彻底删除串行化发布；而 SQLite 的这把锁作用于整个数据库，运行状态、线程
+  元数据与调度器的写入都要等待整个转换完成，超过 30 秒即报 `database is locked`。
+  现在转换在任何事务之外写入 `.staging/`，只在重新校验文档行并原子重命名输出时
+  持锁，期间被移入回收站或彻底删除的文档仍不会发布任何内容。同一文档的并发首次读取
+  共享一次转换，不再各自占用文件 IO 工作线程。([#6305])
+- **网关：** 单次运行的读取现在能返回 IM 渠道所有者的数据。`start_run` 用原始
+  受信所有者 ID（例如 `feishu:owner-777`）标记运行行与运行事件，但多个运行级路由
+  按内部调用方规范化后的 ID 过滤，因此在 SQL 存储上，只要所有者 ID 含有
+  `[A-Za-z0-9_-]` 以外的字符就匹配不到任何数据：
+  `GET /api/threads/{id}/runs/{rid}/messages` 与 `/events` 返回空列表，
+  `/workspace-changes` 报告没有变更，`/artifacts/archive` 返回 404，重新生成的
+  源运行查找退回兜底路径或返回 409。这些读取现在使用与线程消息路由（#5448）相同
+  的数据身份，所有事件存储的 `list_messages_by_run()` 都接受 `user_id`。浏览器与
+  API 会话仍保留按用户过滤。([#6282])
+- **运行时：** 多 worker 部署中已成功结束的运行，不会再在其 worker 仍在收尾时被
+  当作孤儿运行回收为 `error`。配置了事件存储时，worker 先在内存中记录终态，直到
+  journal 刷新、交付回执、工作区扫描与时长 checkpoint 写入完成后才写入运行存储。
+  此前租约续期会跳过本地状态已是终态的运行，收尾一旦超过租约加宽限期（默认约
+  30–40 秒），其他 worker 或本 worker 自己的回收器就会接管这条仍处于活动状态的
+  记录。心跳现在会持续续期直到这次延迟写入被执行，若期间被其他 worker 接管则隔离
+  本地运行。仅影响启用 `run_ownership.heartbeat_enabled` 的部署。([#6263])
 - **渠道：** 通过 `/connect` 绑定的 Buzz 作者在已参与的话题中回复时，无需再次提及
   机器人。开启 `channel_connections.enabled` 后，管理器只在连接仓库中记录已绑定作者
   的话题映射，而 Buzz 的话题跟随判断只读取 JSON 渠道存储，导致机器人正在回复的话题
@@ -6437,3 +6473,8 @@ DeerFlow 2.0 是围绕"超级智能体"框架的彻底重写，核心包含子�
 [#6232]: https://github.com/bytedance/deer-flow/pull/6232
 [#6238]: https://github.com/bytedance/deer-flow/pull/6238
 [#6255]: https://github.com/bytedance/deer-flow/pull/6255
+[#6263]: https://github.com/bytedance/deer-flow/pull/6263
+[#6282]: https://github.com/bytedance/deer-flow/pull/6282
+[#6305]: https://github.com/bytedance/deer-flow/pull/6305
+[#6306]: https://github.com/bytedance/deer-flow/pull/6306
+[#6307]: https://github.com/bytedance/deer-flow/pull/6307
