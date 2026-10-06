@@ -758,6 +758,8 @@ class TestJsonMatchCompilation:
         assert "json_type" in sql
         assert "IN ('integer', 'real')" in sql
         assert "REAL" in sql
+        # SQLite's REAL cast saturates instead of raising, so it needs no guard
+        assert "pg_input_is_valid" not in sql
 
         str_expr = json_match(t.c.data, "k", "hello")
         sql = str(str_expr.compile(dialect=engine.dialect, compile_kwargs={"literal_binds": True}))
@@ -793,12 +795,14 @@ class TestJsonMatchCompilation:
         assert "CAST" not in sql
         assert "(t.data ->> 'k') = '42'" in sql
 
-        # float: uses DOUBLE PRECISION cast
+        # float: uses DOUBLE PRECISION cast, guarded so out-of-range stored
+        # spellings (1e400, 1e-400) never reach the raising cast
         float_expr = json_match(t.c.data, "k", 3.14)
         sql = str(float_expr.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))
         assert "json_typeof" in sql
         assert "'number'" in sql
         assert "DOUBLE PRECISION" in sql
+        assert "CASE WHEN pg_input_is_valid((t.data ->> 'k'), 'DOUBLE PRECISION') THEN CAST((t.data ->> 'k') AS DOUBLE PRECISION) = 3.14 ELSE false END" in sql
 
         str_expr = json_match(t.c.data, "k", "hello")
         sql = str(str_expr.compile(dialect=dialect, compile_kwargs={"literal_binds": True}))

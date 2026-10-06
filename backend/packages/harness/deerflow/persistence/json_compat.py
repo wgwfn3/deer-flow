@@ -134,6 +134,9 @@ class _Dialect:
     null_type: str
     num_types: tuple[str, ...]
     num_cast: str
+    # PostgreSQL raises on JSON numbers outside DOUBLE PRECISION range; SQLite's
+    # REAL cast saturates to +/-inf or +/-0.0 instead.
+    num_cast_raises: bool
     int_types: tuple[str, ...]
     # PostgreSQL ->> returns the JSON number spelling; SQLite json_extract
     # returns a native integer or a (possibly lossy) real for large integers.
@@ -146,6 +149,7 @@ _SQLITE = _Dialect(
     null_type="null",
     num_types=("integer", "real"),
     num_cast="REAL",
+    num_cast_raises=False,
     int_types=("integer",),
     int_as_text=False,
     string_type="text",
@@ -156,6 +160,7 @@ _PG = _Dialect(
     null_type="null",
     num_types=("number",),
     num_cast="DOUBLE PRECISION",
+    num_cast_raises=True,
     int_types=("number",),
     int_as_text=True,
     string_type="string",
@@ -200,7 +205,13 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
         return f"({_type_check(typeof, dialect.int_types)} AND {comparison})"
     if isinstance(value, float):
         bp = _bind(compiler, value, Float(), **kw)
-        return f"({_type_check(typeof, dialect.num_types)} AND CAST({extract} AS {dialect.num_cast}) = {bp})"
+        comparison = f"CAST({extract} AS {dialect.num_cast}) = {bp}"
+        if dialect.num_cast_raises:
+            # Overflow (1e400) and underflow to zero (1e-400) both raise 22003,
+            # so one such stored value would fail the whole query. Skip spellings
+            # the cast rejects; CASE, unlike AND, guarantees evaluation order.
+            comparison = f"CASE WHEN pg_input_is_valid({extract}, '{dialect.num_cast}') THEN {comparison} ELSE false END"
+        return f"({_type_check(typeof, dialect.num_types)} AND {comparison})"
     bp = _bind(compiler, str(value), String(), **kw)
     return f"({typeof} = '{dialect.string_type}' AND {extract} = {bp})"
 
