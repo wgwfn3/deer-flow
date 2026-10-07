@@ -180,6 +180,38 @@ def _type_check(typeof: str, types: tuple[str, ...]) -> str:
     return f"{typeof} IN ({quoted})"
 
 
+# Last finite float8 spelling PostgreSQL accepts; the next ulp (…159e+308) raises 22003.
+_FLOAT8_MAX = "1.7976931348623158e+308"
+# Half the min positive denormal: that exact spelling raises; anything larger rounds to 5e-324.
+_FLOAT8_HALF_MIN_DENORM = "2.4703282292062327e-324"
+# CAST AS NUMERIC raises around 1e140000 / 131073 nines; stay well under both.
+_NUMERIC_SAFE_CHARS = 10000
+_ZERO_SPELLING = r"^-?0(\.0+)?([eE][+-]?[0-9]+)?$"
+
+
+def _pg_float_guard(typeof: str, extract: str, comparison: str, bp: str) -> str:
+    """Skip JSON numbers that CAST AS DOUBLE PRECISION would reject (SQLSTATE 22003).
+
+    Portable to PostgreSQL 14: do not use ``pg_input_is_valid`` (PostgreSQL 16+).
+    CASE, unlike AND, guarantees evaluation order so the raising float8 cast only
+    runs after cheaper, non-raising checks. CAST AS NUMERIC itself raises on
+    ~1e140000 / 131073 nines, so exponent length and ``char_length`` run first.
+    Exact-zero spellings (including ``0e400``) are matched without a numeric cast
+    so a huge exponent cannot overflow NUMERIC on a stored zero.
+    """
+    n = f"CAST({extract} AS NUMERIC)"
+    return (
+        "CASE "
+        f"WHEN {typeof} <> 'number' THEN false "
+        f"WHEN {extract} ~ '{_ZERO_SPELLING}' THEN {bp} = 0 "
+        f"WHEN char_length({extract}) > {_NUMERIC_SAFE_CHARS} THEN false "
+        f"WHEN char_length(ltrim(substring({extract} FROM '[eE]([+-]?[0-9]+)$'), '+-')) >= 6 THEN false "
+        f"WHEN abs({n}) > CAST('{_FLOAT8_MAX}' AS NUMERIC) THEN false "
+        f"WHEN abs({n}) <= CAST('{_FLOAT8_HALF_MIN_DENORM}' AS NUMERIC) THEN false "
+        f"ELSE {comparison} END"
+    )
+
+
 def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: object, dialect: _Dialect, **kw: Any) -> str:
     if value is None:
         return f"{typeof} = '{dialect.null_type}'"
@@ -208,9 +240,9 @@ def _build_clause(compiler: SQLCompiler, typeof: str, extract: str, value: objec
         comparison = f"CAST({extract} AS {dialect.num_cast}) = {bp}"
         if dialect.num_cast_raises:
             # Overflow (1e400) and underflow to zero (1e-400) both raise 22003,
-            # so one such stored value would fail the whole query. Skip spellings
-            # the cast rejects; CASE, unlike AND, guarantees evaluation order.
-            comparison = f"CASE WHEN pg_input_is_valid({extract}, '{dialect.num_cast}') THEN {comparison} ELSE false END"
+            # so one such stored value would fail the whole query. The CASE
+            # folds the type check in: AND has no evaluation-order guarantee.
+            return f"({_pg_float_guard(typeof, extract, comparison, bp)})"
         return f"({_type_check(typeof, dialect.num_types)} AND {comparison})"
     bp = _bind(compiler, str(value), String(), **kw)
     return f"({typeof} = '{dialect.string_type}' AND {extract} = {bp})"
