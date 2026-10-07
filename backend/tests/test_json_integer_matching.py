@@ -67,6 +67,7 @@ async def test_integer_filter_ignores_unrepresentable_stored_numbers(json_table,
 # Zero and infinite filters are left out on purpose: SQLite saturates stored
 # spellings beyond DOUBLE PRECISION to +/-0.0 or +/-inf, whereas PostgreSQL
 # treats them as never matching, so only those filters differ by backend.
+# (Exact-zero spellings such as 0e400 still match 0.0 on both backends.)
 _FINITE_FLOATS = [-1.7976931348623157e308, -1.5, -5e-324, 5e-324, 1.5, 42.0, 1.7976931348623157e308]
 
 
@@ -79,6 +80,9 @@ async def test_float_filter_ignores_out_of_range_stored_numbers(json_table, expe
         # PostgreSQL refuses to cast these spellings to DOUBLE PRECISION:
         # overflow and underflow to zero both raise SQLSTATE 22003, so a
         # single such row used to fail every float filter on the table.
+        # beyond-numeric / huge-exponent would also overflow the NUMERIC
+        # bounds check, and 0e400 must take the exact-zero branch for the
+        # same reason; overflow-ulp is the first spelling above DBL_MAX.
         {"id": "overflow", "data": '{"x": 1e400}'},
         {"id": "negative-overflow", "data": '{"x": -1e400}'},
         {"id": "underflow", "data": '{"x": 1e-400}'},

@@ -197,7 +197,9 @@ def _pg_float_guard(typeof: str, extract: str, comparison: str, bp: str) -> str:
     runs after cheaper, non-raising checks. CAST AS NUMERIC itself raises on
     ~1e140000 / 131073 nines, so exponent length and ``char_length`` run first.
     Exact-zero spellings (including ``0e400``) are matched without a numeric cast
-    so a huge exponent cannot overflow NUMERIC on a stored zero.
+    so a huge exponent cannot overflow NUMERIC on a stored zero; they still match
+    a ``0.0`` filter. Underflow such as ``1e-400`` is not an exact zero and never
+    matches, whereas SQLite saturates it to 0.0.
     """
     n = f"CAST({extract} AS NUMERIC)"
     return (

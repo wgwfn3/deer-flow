@@ -29,6 +29,7 @@ values outside float8's finite range. Do not move the float8 cast into an `AND`
 why exponent length and `char_length` run first. Such values never match on
 PostgreSQL, while SQLite's REAL cast saturates them to +/-inf or +/-0.0 — zero
 and infinite float filters are the only ones whose results differ by backend.
-The CASE uses only SQL that exists in PostgreSQL 14.
+Exact-zero spellings like `0e400` are not underflow and match `0.0` on both.
+The CASE uses only SQL that exists in PostgreSQL 14; keep it that way.
 `tests/test_json_integer_matching.py` exercises both dialects; PostgreSQL opts in
 with `DEERFLOW_TEST_POSTGRES_URL` and uses connection-local temporary tables.
