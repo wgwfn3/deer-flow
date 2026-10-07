@@ -694,6 +694,13 @@
 
 ### 修复
 
+- **沙箱：** e2b 沙箱中失败的命令现在会保留输出和退出码。e2b SDK 在退出码非零时抛出
+  `CommandExitException`，而不是返回结果，因此 `E2BSandbox.execute_command` 返回的是
+  `Error: Command exited with code N and error: ...`：stdout 被丢弃，`Exit Code: N`
+  标记从未追加，`_bash_evidence_status` 退回到报告 `success` 的 `deerflow_tool_meta`，
+  失败的 `pytest` 可能满足 `tests_passed` 验收条件。该异常本身带有命令的 stdout、stderr
+  与退出码，现在会按返回结果的方式格式化。stderr 中恰好包含 "sandbox not found" 的失败命令
+  也不再把沙箱标记为已回收。
 - **前端：** 侧边对话发送失败时不再清空输入框。侧边对话的提交处理在弹出错误提示后仍以成功返回，输入框据此视为成功，
   因此在创建侧边对话或上传附件失败时，已输入的文字和附件都会丢失；发往新侧边对话的第一条消息也会在排队时（实际发送前）
   就被清空。现在提交处理会在提示后抛出错误，排队的首条发送也以其自身结果完成提交，因此草稿会保留以便重试，只有消息
