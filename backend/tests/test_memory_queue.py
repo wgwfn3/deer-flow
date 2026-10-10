@@ -378,6 +378,39 @@ def test_flush_sync_returns_true_when_inflight_worker_finishes_in_budget() -> No
     assert queue._processing_thread is None
 
 
+def test_flush_sync_drains_work_requeued_by_inflight_worker_finally() -> None:
+    """An in-flight worker that saw new work schedules a daemon Timer(0) in its
+    finally. A single join-then-flush races that Timer: flush no-ops, then
+    ``not is_processing`` is False, so flush_sync used to return False with
+    most of the budget unused. The emergency item (t2) is then lost on exit.
+    """
+    started = threading.Event()
+    done: list[str] = []
+
+    class SlowUpdater:
+        def update_memory(self, messages, thread_id=None, **kw):
+            started.set()
+            time.sleep(0.3)
+            done.append(thread_id)
+            return True
+
+    queue = MemoryUpdateQueue(DeerMemConfig(debounce_seconds=1), SlowUpdater())
+    queue.add_nowait("t1", ["m"], user_id="u")
+    assert started.wait(5)
+    queue.add_nowait("t2", ["m"], user_id="u")
+    time.sleep(0.02)
+
+    t0 = time.monotonic()
+    completed = queue.flush_sync(timeout=10.0)
+    took = time.monotonic() - t0
+
+    assert completed is True
+    assert set(done) == {"t1", "t2"}
+    assert queue.is_processing is False
+    assert queue.pending_count == 0
+    assert took < 5.0
+
+
 def test_flush_sync_returns_false_when_flush_raises() -> None:
     """flush_sync reports failure (not success) when flush() raises, so the
     caller never logs a contradictory 'completed' next to the exception

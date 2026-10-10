@@ -338,7 +338,7 @@ class MemoryUpdateQueue:
         timer fire are lost on restart / rolling deploy / SIGTERM, because the
         queue is pure in-memory and the debounce Timer is a daemon thread.
 
-        The drain accounts for two races a naive ``flush()`` would miss:
+        The drain accounts for three races a naive ``flush()`` would miss:
 
         - **In-flight worker.** If the debounce Timer already fired, an
           ``_process_queue`` worker is mid-LLM-call holding contexts it already
@@ -348,55 +348,76 @@ class MemoryUpdateQueue:
           the in-flight worker first (bounded by the remaining budget).
         - **Failed flush.** ``flush`` makes a synchronous LLM call that can
           raise; success is tracked on the happy path only, so the return value
-          matches the docstring's "completed".
+          matches the docstring's "completed". On a raise we return ``False``
+          immediately and do not retry the rest of the budget.
+        - **Finally-block Timer(0).** An in-flight worker that observed
+          ``_reprocess_pending`` (new work arrived while it ran) schedules a
+          daemon ``Timer(0)`` in its ``finally``. That Timer can claim
+          ``_process_queue`` before this method's own drain thread, so a
+          single join-then-flush would see ``_processing=True``, no-op, and
+          return ``False`` with most of the budget unused. We therefore loop
+          "join in-flight → drain remaining" until idle or the deadline.
 
-        Note: steps (1) and (3) share the same ``deadline`` budget. A slow
-        in-flight worker can consume most/all of it, leaving step (3) to no-op;
-        ``timeout`` must therefore cover both a slow in-flight worker *and* the
-        remaining queue (best-effort: any tail not drained in budget is dropped,
-        same failure direction as no flush, scoped to the tail).
+        Note: the join and drain share the same ``deadline`` budget. A slow
+        in-flight worker can consume most/all of it, leaving a later drain to
+        no-op; ``timeout`` must therefore cover both a slow in-flight worker
+        *and* the remaining queue (best-effort: any tail not drained in budget
+        is dropped, same failure direction as no flush, scoped to the tail).
 
         Returns ``True`` only if the drain genuinely finished (queue empty, no
         worker still running, flush did not raise) within ``timeout``.
         """
         deadline = time.monotonic() + timeout
+        raised = False
 
-        # (1) Wait for an in-flight _process_queue first (bounded). Otherwise
-        # flush() would see _processing=True, no-op, and we would report
-        # success while that worker is still mid-LLM-call on a daemon thread
-        # that exit will kill - losing the contexts it already pulled out.
-        with self._lock:
-            in_flight = self._processing_thread
-        if in_flight is not None:
-            in_flight.join(timeout=max(0.0, deadline - time.monotonic()))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
 
-        # (2) Genuine idle: nothing pending and no worker still running.
-        if self.pending_count == 0 and not self.is_processing:
-            return True
+            # (1) Wait for an in-flight _process_queue first (bounded). Otherwise
+            # flush() would see _processing=True, no-op, and we would report
+            # success while that worker is still mid-LLM-call on a daemon thread
+            # that exit will kill - losing the contexts it already pulled out.
+            with self._lock:
+                in_flight = self._processing_thread
+            if in_flight is not None:
+                in_flight.join(timeout=max(0.0, deadline - time.monotonic()))
 
-        # (3) Drain the queue on a daemon thread so the timeout is a real hard
-        # stop: flush() makes a synchronous LLM call that cannot be
-        # interrupted, so we wait on Event.wait, not on Thread.join.
-        success = False
-        done = threading.Event()
+            # (2) Genuine idle: nothing pending and no worker still running.
+            if self.pending_count == 0 and not self.is_processing:
+                return True
 
-        def _run() -> None:
-            nonlocal success
-            try:
-                self.flush(skip_inter_item_delay=True)
-                success = True
-            except Exception:
-                logger.exception("Memory queue flush failed during shutdown drain")
-            finally:
-                done.set()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
 
-        worker = threading.Thread(target=_run, name="memory-shutdown-flush", daemon=True)
-        worker.start()
-        finished = done.wait(timeout=max(0.0, deadline - time.monotonic()))
-        if not finished:
-            return False
-        # flush() returned; only report success if no worker raced back in.
-        return bool(success) and not self.is_processing
+            # (3) Drain the queue on a daemon thread so the timeout is a real hard
+            # stop: flush() makes a synchronous LLM call that cannot be
+            # interrupted, so we wait on Event.wait, not on Thread.join.
+            success = False
+            done = threading.Event()
+
+            def _run() -> None:
+                nonlocal success, raised
+                try:
+                    self.flush(skip_inter_item_delay=True)
+                    success = True
+                except Exception:
+                    raised = True
+                    logger.exception("Memory queue flush failed during shutdown drain")
+                finally:
+                    done.set()
+
+            worker = threading.Thread(target=_run, name="memory-shutdown-flush", daemon=True)
+            worker.start()
+            finished = done.wait(timeout=max(0.0, remaining))
+            if not finished:
+                return False
+            if raised or not success:
+                return False
+            # Timer(0) from a worker's finally may have claimed the next batch;
+            # loop to join it instead of returning False with budget remaining.
 
     def flush_nowait(self) -> None:
         """Start queue processing immediately in a background thread."""

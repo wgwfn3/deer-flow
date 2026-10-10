@@ -851,6 +851,12 @@ This release closes that milestone with **439 merged pull requests**.
 
 ### Fixed
 
+- **memory:** `MemoryUpdateQueue.flush_sync` now keeps draining until idle or the
+  deadline, instead of returning False as soon as an in-flight worker's
+  `finally` schedules a daemon `Timer(0)` that wins the next `_process_queue`.
+  That race dropped `bypass_watermark` emergency items (the pre-summarization
+  snapshot) on Gateway shutdown; ordinary items can be re-fed, those cannot.
+
 - **channels:** IM conversations now keep their DeerFlow thread across Gateway
   replicas. The `ChannelManager` kept its chat-to-thread bindings
   (`channel_name:chat_id[:topic_id]` → `thread_id`) in a per-process JSON file,
