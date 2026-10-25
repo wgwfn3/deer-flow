@@ -230,9 +230,14 @@ def _extract_skill_name_from_skills_path(path: str) -> str | None:
     /mnt/skills/public/bootstrap/ → "bootstrap"
     Returns None if the path doesn't contain a recognizable skill name pattern.
     """
+    import posixpath
+
     skills_prefix = _get_skills_container_path()
     if not _is_skills_path(path):
         return None
+    # Normalize to collapse '.', '..', and repeated slashes before extraction.
+    # This prevents '/mnt/skills/public/./foo' from yielding '.' as the skill name.
+    path = posixpath.normpath(path)
     # Strip the skills prefix, e.g. "/mnt/skills/"
     relative = path[len(skills_prefix) :].lstrip("/")
     if not relative:
@@ -269,6 +274,10 @@ def _is_disabled_skill_path(path: str, *, user_id: str | None = None) -> bool:
 
     Returns False for non-skills paths or paths whose skill is enabled.
     """
+    import posixpath
+
+    # Normalize to collapse '.', '..', and repeated slashes before enabled-state lookup.
+    path = posixpath.normpath(path)
     skill_name = _extract_skill_name_from_skills_path(path)
     if skill_name is None:
         return False
