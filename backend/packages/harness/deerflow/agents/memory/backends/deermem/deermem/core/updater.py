@@ -2424,6 +2424,12 @@ class MemoryUpdater:
                 # non-string guard above does, instead of appending a blank
                 # fact that violates the non-empty-content invariant.
                 continue
+            if _UPLOAD_SENTENCE_RE.search(normalized_content):
+                # Finalization scrubs upload-event facts. Reject them here so they
+                # never register as a paired replacement: otherwise the removal
+                # check accepts a replacement the scrub later drops, and both the
+                # target and its replacement are lost.
+                continue
             # Remember every eligible replacement's content key even when it is
             # already present. A paired removal is safe only if the post-trim
             # memory contains this content under an ID other than its target.
