@@ -32,19 +32,15 @@ def test_paired_removal_both_deleted_same_batch():
 
     result_memory = updater._apply_updates(copy.deepcopy(current_memory), update_data, user_id="test", thread_id="thread1")
 
-    # Expected behavior:
-    # - fact_b is unconditionally removed first (added to unconditional_removals).
-    # - fact_a's paired removal checks if newFacts[0]'s content key matches an existing fact
-    #   that is NOT in unconditional_removals. fact_b matches but is being deleted, so
-    #   the paired removal is rejected.
-    # - newFacts[0] is added as a new fact (duplicate content is allowed by default).
-    # Result: fact_a (kept) + new fact (from newFacts[0]) = 2 facts total.
-    # But fact_b is gone.
+    # fact_b is deleted unconditionally, so newFacts[0] is no longer a duplicate
+    # and is appended. The replacement content therefore survives under a new ID,
+    # which makes the paired removal of fact_a safe. Before the fix both facts were
+    # deleted and the replacement content was lost entirely.
     facts = result_memory.get("facts", [])
-    assert len(facts) == 2, f"Expected 2 facts (fact_a + new fact from newFacts[0]), got {len(facts)}"
+    assert [f["content"] for f in facts] == ["User prefers spaces"]
     fact_ids = {f["id"] for f in facts}
-    assert "fact_a" in fact_ids, "fact_a should remain (paired removal was rejected)"
-    assert "fact_b" not in fact_ids, "fact_b should be deleted (unconditional removal)"
+    assert "fact_a" not in fact_ids
+    assert "fact_b" not in fact_ids
 
 
 def test_paired_removal_replacement_stays():
