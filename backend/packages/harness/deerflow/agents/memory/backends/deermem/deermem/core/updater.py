@@ -2608,6 +2608,10 @@ class MemoryUpdater:
                     content = consolidated.get("content", "")
                     if not isinstance(content, str) or not content.strip():
                         continue
+                    if _UPLOAD_SENTENCE_RE.search(content):
+                        # Finalization scrubs upload-event facts. Skip the merge here so
+                        # its sources are not consumed for a result the scrub drops.
+                        continue
                     rejection_reason = _fact_scope_gate_reason(consolidated)
                     if rejection_reason is not None:
                         reject_by_scope_gate("consolidations", rejection_reason)
