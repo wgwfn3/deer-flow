@@ -2397,10 +2397,6 @@ class MemoryUpdater:
         # Add new facts
         # Compute existing_fact_keys excluding facts that will be unconditionally deleted
         existing_fact_keys = {fact_key for fact_key in (_fact_content_key(fact.get("content")) for fact in current_memory.get("facts", []) if fact.get("id") not in unconditional_removals) if fact_key is not None}
-        # Remember the count of existing facts before adding new ones. This allows
-        # paired removal validation to check only pre-existing facts, not newly added
-        # ones that haven't been persisted yet.
-        original_fact_count = len(current_memory.get("facts", []))
         new_facts = update_data.get("newFacts", [])
         # Creation-time lifetime cap shared with the consolidation path below, so
         # both fact-creation sites apply the identical bound in one place.
@@ -2554,20 +2550,30 @@ class MemoryUpdater:
         # both halves of a pair are deleted in the same batch, the paired
         # removal is rejected rather than leaving neither fact behind.
         fact_ids_to_remove = unconditional_removals.copy()
+        accepted_pairs: dict[str, str] = {}
         for fact_id, replacement_index in paired_removals:
             replacement_key = replacement_fact_keys.get(replacement_index)
             if replacement_key is None:
                 reject_by_scope_gate("removals", "replacement")
                 continue
-            # Check if the replacement fact exists among the original (pre-add) facts,
-            # is distinct from the target, and is not itself being deleted. New facts
-            # added in this batch don't count as valid replacements.
-            original_facts = current_memory.get("facts", [])[:original_fact_count]
-            replacement_exists = any(fact.get("id") != fact_id and fact.get("id") not in unconditional_removals and _fact_content_key(fact.get("content")) == replacement_key for fact in original_facts)
-            if not replacement_exists:
+            accepted_pairs[fact_id] = replacement_key
+        # A paired removal is safe only if its replacement content survives the
+        # whole batch under another ID. Check against the final keep set (by ID,
+        # since capacity selection may have reordered or evicted facts), and iterate to a fixpoint: accepting one pair can
+        # delete the only remaining copy another pair relied on as its replacement.
+        while accepted_pairs:
+            removing = unconditional_removals | accepted_pairs.keys()
+            rejected_pairs = [
+                fact_id
+                for fact_id, replacement_key in accepted_pairs.items()
+                if not any(isinstance(fact, dict) and fact.get("id") != fact_id and fact.get("id") not in removing and _fact_content_key(fact.get("content")) == replacement_key for fact in current_memory.get("facts", []))
+            ]
+            if not rejected_pairs:
+                break
+            for fact_id in rejected_pairs:
                 reject_by_scope_gate("removals", "replacement")
-                continue
-            fact_ids_to_remove.add(fact_id)
+                del accepted_pairs[fact_id]
+        fact_ids_to_remove |= accepted_pairs.keys()
 
         if fact_ids_to_remove:
             # Count only targets that actually existed: a scope-valid removal of
