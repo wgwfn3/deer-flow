@@ -2480,7 +2480,9 @@ def _truncate_bash_output(output: str, max_chars: int) -> str:
     marker_max_len = len(f"\n... [middle truncated: {total_len} chars skipped] ...\n")
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
-        return output[:max_chars] + preserved
+        # Too small a budget for any text plus the full marker: say so instead
+        # of returning a bare prefix that reads as the complete output.
+        return f"... [truncated: {total_len} chars] ..."[:max_chars] + preserved
     head_len = kept // 2
     tail_len = kept - head_len
     skipped = total_len - kept
@@ -2634,7 +2636,9 @@ def _truncate_ls_output(output: str, max_chars: int) -> str:
     marker_max_len = len(f"\n... [truncated: showing first {total} of {total} chars. Use a more specific path to see fewer results] ...")
     kept = max(0, max_chars - marker_max_len)
     if kept == 0:
-        return output[:max_chars]
+        # Too small a budget for any entries plus the full marker: say so instead
+        # of returning a bare prefix that reads as the complete listing.
+        return f"... [truncated: {total} chars] ..."[:max_chars]
     marker = f"\n... [truncated: showing first {kept} of {total} chars. Use a more specific path to see fewer results] ..."
     return f"{output[:kept]}{marker}"
 
